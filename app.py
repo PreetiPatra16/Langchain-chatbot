@@ -7,17 +7,20 @@ load_dotenv()
 
 api_key = os.getenv("GOOGLE_API_KEY")
 
-if not api_key:
-    raise ValueError("API key missing")
-
 # ------------------ GEMINI CLIENT ------------------
-client = genai.Client(api_key=api_key)
+if api_key:
+    client = genai.Client(api_key=api_key)
+else:
+    client = None
 
 # ------------------ MEMORY ------------------
 # Stores chat history for multiple users
 chat_sessions = {}
 
 def chat_with_memory(session_id, user_input):
+    if not client:
+        return "Error: API key not configured"
+
     if session_id not in chat_sessions:
         chat_sessions[session_id] = []
 
