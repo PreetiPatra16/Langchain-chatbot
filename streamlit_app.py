@@ -3,7 +3,7 @@ import requests
 
 API_URL = "http://127.0.0.1:8000/chat"
 
-st.title("💬 AI Chatbot with Memory")
+st.title("💬 AI Chatbot ")
 
 # Unique session per user
 if "session_id" not in st.session_state:
