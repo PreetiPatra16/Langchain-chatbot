@@ -27,6 +27,7 @@ def save_message(
     session_id: str,
     role: str,
     content: str,
+    sources: list[str] | None = None,
     model: str | None = None,
     input_tokens: int | None = None,
     output_tokens: int | None = None,
@@ -36,6 +37,7 @@ def save_message(
         "session_id": session_id,
         "role": role,
         "content": content,
+        "sources": sources,
         "model": model,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
@@ -43,15 +45,16 @@ def save_message(
     }).execute()
 
 
-def get_history(session_id: str) -> list[dict]:
+def get_history(session_id: str, limit: int = 10) -> list[dict]:
     result = (
         _supabase.table("messages")
-        .select("role, content, model, input_tokens, output_tokens, latency_ms, created_at")
+        .select("role, content, sources, model, input_tokens, output_tokens, latency_ms, created_at")
         .eq("session_id", session_id)
-        .order("created_at", desc=False)
+        .order("created_at", desc=True)
+        .limit(limit)
         .execute()
     )
-    return result.data
+    return list(reversed(result.data))  # chronological order for LangChain
 
 
 def list_sessions() -> list[dict]:

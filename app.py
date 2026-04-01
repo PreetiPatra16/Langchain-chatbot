@@ -1,64 +1,150 @@
 import os
-import time
-from dotenv import load_dotenv
-from google import genai
-import db
+import streamlit as st
+from rag import chat
+from db import _supabase
 
-load_dotenv()
+st.set_page_config(page_title="MOSTLY AI Docs Assistant", page_icon="🤖")
 
-api_key = os.getenv("GOOGLE_API_KEY")
-client = genai.Client(api_key=api_key) if api_key else None
+def login_or_signup():
+    if "user" not in st.session_state:
+        st.session_state.user = None
 
+    if st.session_state.user is not None:
+        return True
 
-def chat_with_memory(session_id: str, user_input: str, model: str) -> dict:
-    if not client:
-        return {"error": "API key not configured"}
+    st.title("Welcome to MOSTLY AI Docs Assistant")
+    
+    tab1, tab2 = st.tabs(["Login", "Create Account"])
+    
+    with tab1:
+        st.subheader("Login")
+        login_email = st.text_input("Email", key="login_email")
+        login_password = st.text_input("Password", type="password", key="login_password")
+        if st.button("Login"):
+            try:
+                response = _supabase.auth.sign_in_with_password({"email": login_email, "password": login_password})
+                if response.user:
+                    st.session_state.user = response.user
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Login failed: {str(e)}")
+                
+    with tab2:
+        st.subheader("Create Account")
+        signup_email = st.text_input("Email", key="signup_email")
+        signup_password = st.text_input("Password", type="password", key="signup_password")
+        if st.button("Sign Up"):
+            try:
+                response = _supabase.auth.sign_up({"email": signup_email, "password": signup_password})
+                if response.user:
+                    # Automatically log the user in
+                    st.session_state.user = response.user
+                    st.rerun()
+            except Exception as e:
+                st.error(f"Sign up failed: {str(e)}")
 
-    db.ensure_session(session_id, model)
+    return False
 
-    history = db.get_history(session_id)
-    history_text = "\n".join(
-        f"{'User' if m['role'] == 'user' else 'Bot'}: {m['content']}"
-        for m in history
-    )
+if not login_or_signup():
+    st.stop()
 
-    final_prompt = f"""You are a helpful assistant.
+import uuid
 
-Conversation so far:
-{history_text}
+# --- Sidebar logic ---
+st.sidebar.markdown(f"👤 **{st.session_state.user.email}**")
+if st.sidebar.button("Sign Out"):
+    st.session_state.user = None
+    if "sessions" in st.session_state:
+        del st.session_state.sessions
+    if "active_session_id" in st.session_state:
+        del st.session_state.active_session_id
+    st.rerun()
 
-User: {user_input}"""
+st.sidebar.divider()
 
-    db.save_message(session_id, "user", user_input)
+if "sessions" not in st.session_state:
+    st.session_state.sessions = {}
+if "active_session_id" not in st.session_state:
+    st.session_state.active_session_id = None
 
-    try:
-        t0 = time.time()
-        response = client.models.generate_content(
-            model=model,
-            contents=final_prompt,
-        )
-        latency_ms = int((time.time() - t0) * 1000)
+def create_new_session():
+    new_id = str(uuid.uuid4())
+    st.session_state.sessions[new_id] = {
+        "title": f"Chat {len(st.session_state.sessions) + 1}",
+        "messages": [],
+        "chat_history": []
+    }
+    st.session_state.active_session_id = new_id
 
-        answer = response.text
-        usage = response.usage_metadata
-        input_tokens = getattr(usage, "prompt_token_count", None)
-        output_tokens = getattr(usage, "candidates_token_count", None)
+if not st.session_state.sessions or st.session_state.active_session_id is None:
+    create_new_session()
 
-        db.save_message(
-            session_id, "assistant", answer,
-            model=model,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            latency_ms=latency_ms,
-        )
+if st.sidebar.button("➕ New Chat"):
+    create_new_session()
+    st.rerun()
 
-        return {
-            "response": answer,
-            "model": model,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "latency_ms": latency_ms,
-        }
+st.sidebar.subheader("Recent Chats")
+for sess_id, sess_data in st.session_state.sessions.items():
+    label = sess_data["title"]
+    # Provide visual indication of active chat
+    if sess_id == st.session_state.active_session_id:
+        label = f"💬 {label}"
+    else:
+        label = f"📁 {label}"
+    if st.sidebar.button(label, key=f"btn_{sess_id}"):
+        st.session_state.active_session_id = sess_id
+        st.rerun()
 
-    except Exception as e:
-        return {"error": str(e)}
+# --- Main App ---
+st.title("MOSTLY AI Docs Assistant")
+st.caption("Ask anything about MOSTLY AI — answers are grounded in the official documentation.")
+
+active_session = st.session_state.sessions[st.session_state.active_session_id]
+
+# Render existing messages
+for msg in active_session["messages"]:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if msg.get("sources"):
+            with st.expander("Sources"):
+                for src in msg["sources"]:
+                    st.markdown(f"- [{src}]({src})")
+
+# Chat input
+if user_input := st.chat_input("Ask about MOSTLY AI..."):
+    # Show user message immediately
+    with st.chat_message("user"):
+        st.markdown(user_input)
+    active_session["messages"].append({"role": "user", "content": user_input})
+
+    # Get answer
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            try:
+                answer, updated_history, source_docs = chat(
+                    user_input, active_session["chat_history"]
+                )
+            except Exception as e:
+                st.error(f"Error communicating with AI: {str(e)}\nPlease try asking your question again.")
+                st.stop()
+                
+        st.markdown(answer)
+
+        # Deduplicate source URLs
+        sources = list(dict.fromkeys(
+            doc.metadata.get("source", "") for doc in source_docs
+            if doc.metadata.get("source")
+        ))
+        if sources:
+            with st.expander("Sources"):
+                for src in sources:
+                    st.markdown(f"- [{src}]({src})")
+
+    active_session["chat_history"] = updated_history[-10:]  # keep last 5 turns
+    active_session["messages"].append({
+        "role": "assistant",
+        "content": answer,
+        "sources": sources if sources else [],
+    })
+    
+    st.rerun()

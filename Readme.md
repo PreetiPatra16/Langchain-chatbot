@@ -1,115 +1,91 @@
-# AI Chatbot
+# MOSTLY AI Docs RAG Chatbot
 
-A conversational AI chatbot built with **Streamlit**, **FastAPI**, and **Google Gemini**, with full conversation persistence via **Supabase**.
+A RAG chatbot that answers questions grounded in the [MOSTLY AI documentation](https://docs.mostly.ai/), with a FastAPI backend supporting ~200 anonymous concurrent users and Supabase-persisted sessions.
 
-## Features
-
-- **Multi-model support** — switch between Gemini models from the sidebar dropdown
-- **Persistent conversations** — all sessions and messages stored in Supabase (PostgreSQL)
-- **Session history** — resume any past conversation from the sidebar
-- **Telemetry** — each response shows model used, token counts (in/out), and latency
-- **Anonymous sessions** — no login required; sessions identified by UUID
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Streamlit |
-| Backend API | FastAPI + Uvicorn |
-| LLM | Google Gemini (`google-genai`) |
-| Database | Supabase (PostgreSQL) |
-
-## Supported Models
-
-- `gemini-2.5-flash` (default)
-- `gemini-2.5-pro`
-- `gemini-2.0-flash`
-- `gemini-2.0-flash-lite`
-- `gemini-1.5-pro`
-- `gemini-1.5-flash`
-
-## Project Structure
-
-```
-├── app.py                  # LLM logic — Gemini client, chat with memory
-├── api.py                  # FastAPI routes — /chat, /sessions
-├── db.py                   # Supabase data layer
-├── streamlit_app.py        # Streamlit UI
-├── requirements.txt
-├── .env                    # Environment variables (not committed)
-└── supabase/
-    └── migrations/         # SQL migration files
-```
+**Stack:** Crawl4AI · LangChain · ChromaDB · HuggingFace Embeddings · Gemini · FastAPI · Supabase · Streamlit
 
 ## Setup
 
-### 1. Install dependencies
-
 ```bash
-python -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure environment variables
+Create a `.env` file:
 
-Create a `.env` file in the project root:
-
-```env
-GOOGLE_API_KEY=your_google_api_key
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_KEY=your_supabase_anon_key
+```
+GOOGLE_API_KEY=your_key_here
+SUPABASE_URL=your_supabase_url
+SUPABASE_KEY=your_service_role_key
 ```
 
-- **GOOGLE_API_KEY** — from [Google AI Studio](https://aistudio.google.com/app/apikey)
-- **SUPABASE_URL / SUPABASE_KEY** — from your Supabase project dashboard under *Settings → API*
+## Build the Knowledge Base
 
-### 3. Apply database migrations
-
-Migrations are in `supabase/migrations/`. Apply them via the Supabase dashboard SQL editor or CLI:
+Run these once to populate ChromaDB:
 
 ```bash
-supabase db push
+python scrape.py   # crawls docs.mostly.ai → pages.json
+python ingest.py   # chunks + embeds → chroma_db/
 ```
-
-Or apply each file manually in order.
 
 ## Running
 
-Start the backend and frontend in separate terminals:
+### API (FastAPI)
 
 ```bash
-# Terminal 1 — Backend
-uvicorn api:app --reload
-
-# Terminal 2 — Frontend
-streamlit run streamlit_app.py
+uvicorn api:app --host 0.0.0.0 --port 8000 --workers 1
 ```
 
-The app will be available at `http://localhost:8501`.
+> Use `--workers 1` — the embedding model singleton must not be forked across processes.
+
+Interactive docs available at `http://localhost:8000/docs`.
+
+### UI (Streamlit)
+
+```bash
+streamlit run app.py
+```
 
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| `GET` | `/` | Health check |
-| `POST` | `/chat` | Send a message |
-| `GET` | `/sessions` | List all past sessions |
-| `GET` | `/sessions/{session_id}` | Load a session with full history |
+| `POST` | `/chat` | Send a message, get a RAG-grounded response |
+| `GET` | `/sessions` | List all sessions |
+| `GET` | `/sessions/{session_id}` | Load session history |
+| `DELETE` | `/sessions/{session_id}` | Delete a session |
 
-### POST `/chat` — Request body
+### Example `/chat` request
 
-```json
-{
-  "session_id": "uuid",
-  "message": "Hello!",
-  "model": "gemini-2.5-flash"
-}
+```bash
+curl -X POST http://localhost:8000/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+    "message": "What is MOSTLY AI?",
+    "model": "gemini-2.0-flash"
+  }'
 ```
 
-## Database Schema
+The `session_id` is a client-generated UUID. The server creates the session on first use — no prior registration needed.
 
-```sql
-sessions (id, session_id, current_model, created_at, updated_at)
-messages (id, session_id, role, content, model, input_tokens, output_tokens, latency_ms, created_at)
+## Architecture
+
+- **Anonymous sessions** — client generates a UUID and sends it with each request; no auth required
+- **Persistent history** — last 50 messages per session stored in Supabase; only last 10 fetched for RAG context
+- **Concurrency control** — semaphore caps at 20 concurrent RAG calls; remaining requests queue safely
+- **Single process** — embeddings and ChromaDB loaded once at startup, shared across all requests via thread pool
+
+## Database Migrations
+
+Migration files are in `supabase/migrations/`. Apply them via the Supabase dashboard SQL editor or CLI:
+
+```bash
+supabase db push
 ```
+
+## Notes
+
+- Embeddings use `BAAI/bge-small-en-v1.5` locally (no API quota limits)
+- Model is configurable per request (defaults to `gemini-2.0-flash`)
+- Re-run `scrape.py` + `ingest.py` (after `rm -rf chroma_db/`) to refresh docs
