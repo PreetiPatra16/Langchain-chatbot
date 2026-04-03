@@ -93,8 +93,14 @@ def build_chain(model: str = DEFAULT_MODEL):
     return chain
 
 
+_chains_cache = {}
+
 def get_chain(model: str = DEFAULT_MODEL):
-    return build_chain(model)
+    global _chains_cache
+    model_norm = normalize_model(model)
+    if model_norm not in _chains_cache:
+        _chains_cache[model_norm] = build_chain(model_norm)
+    return _chains_cache[model_norm]
 
 
 def chat(user_input: str, chat_history: list, model: str = DEFAULT_MODEL) -> tuple[str, list, list]:

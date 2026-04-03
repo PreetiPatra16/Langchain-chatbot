@@ -1,8 +1,9 @@
 import asyncio
 import time
+import re
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage, AIMessage
 
@@ -38,13 +39,15 @@ def home():
 @app.post("/chat")
 async def chat(req: ChatRequest):
     if not req.message.strip():
-        return {"error": "Empty input"}
+        raise HTTPException(status_code=400, detail="Empty input")
+    if not re.match(r'^[a-zA-Z0-9_-]+$', req.session_id):
+        raise HTTPException(status_code=400, detail="Invalid session ID format")
 
     model = normalize_model(req.model)
-    db.ensure_session(req.session_id, model)
+    await asyncio.to_thread(db.ensure_session, req.session_id, model)
 
     # Fetch last 10 messages (5 turns) for RAG context
-    history_rows = db.get_history(req.session_id, limit=10)
+    history_rows = await asyncio.to_thread(db.get_history, req.session_id, limit=10)
     chat_history = []
     for row in history_rows:
         if row["role"] == "user":
@@ -52,11 +55,10 @@ async def chat(req: ChatRequest):
         else:
             chat_history.append(AIMessage(content=row["content"]))
 
-    t0 = time.time()
-
     # Offload blocking LangChain call to thread pool; semaphore prevents overload
     loop = asyncio.get_event_loop()
     async with _semaphore:
+        t0 = time.time()
         answer, _, source_docs = await loop.run_in_executor(
             None, rag_chat, req.message, chat_history, model
         )
@@ -68,8 +70,9 @@ async def chat(req: ChatRequest):
         if doc.metadata.get("source")
     ))
 
-    db.save_message(req.session_id, "user", req.message)
-    db.save_message(
+    await asyncio.to_thread(db.save_message, req.session_id, "user", req.message)
+    await asyncio.to_thread(
+        db.save_message,
         req.session_id, "assistant", answer,
         sources=sources or None,
         model=model,
@@ -92,6 +95,8 @@ def sessions():
 
 @app.get("/sessions/{session_id}")
 def load_session(session_id: str):
+    if not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
+        raise HTTPException(status_code=400, detail="Invalid session ID format")
     session = db.get_session(session_id)
     if not session:
         return {"error": "Session not found"}
@@ -106,6 +111,8 @@ def load_session(session_id: str):
 
 @app.delete("/sessions/{session_id}")
 def delete_session(session_id: str):
+    if not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
+        raise HTTPException(status_code=400, detail="Invalid session ID format")
     try:
         db.delete_session(session_id)
         return {"success": True}

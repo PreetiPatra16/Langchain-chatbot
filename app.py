@@ -40,6 +40,8 @@ def login_or_signup():
                     # Automatically log the user in
                     st.session_state.user = response.user
                     st.rerun()
+                else:
+                    st.success("Registration successful! Please check your email for a confirmation link.")
             except Exception as e:
                 st.error(f"Sign up failed: {str(e)}")
 
@@ -125,6 +127,7 @@ if user_input := st.chat_input("Ask about MOSTLY AI..."):
                     user_input, active_session["chat_history"]
                 )
             except Exception as e:
+                active_session["messages"].pop()
                 st.error(f"Error communicating with AI: {str(e)}\nPlease try asking your question again.")
                 st.stop()
                 
